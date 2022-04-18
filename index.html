@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Gomoku</title>
+    <link rel="stylesheet" href="static/css/style.css">
+    <script src="static/vue.js"></script>
+    <script src="./node_modules/socket.io/client-dist/socket.io.js"></script>
+</head>
+<body>
+<main id="app">
+    <div class="gomoku" v-if="!userInfo.show">
+        <div class="board--wrapper">
+
+            <div class="board" @mouseleave="mouseEvent" v-if="board">
+                <div v-for="(row, i) of board.board">
+                    <div class="item" v-for="(item, j) of row"
+                         :class="{ isPoint : points.indexOf(i+' '+j) !== -1, now : i + '' + j === board.now && !board.end }"
+                         @mousemove="mouseEvent(i, j)" @mouseup="mouseEvent(i, j)">
+                        <img src="static/imgs/black.png" alt="" v-if="item === 1">
+                        <img src="static/imgs/white.png" alt="" v-if="item === 2">
+                    </div>
+                </div>
+            </div>
+            <div class="board" @mouseleave="mouseEvent" v-if="!board">
+                <div v-for="(row,i) of display">
+                    <div class="item" v-for="(item,j) of row"
+                         :class="{ isPoint : points.indexOf(i+' '+j) !== -1 }">
+                    </div>
+                </div>
+            </div>
+            <div v-if="board && board.end">
+                <div class="piece-number" v-for="(piece, index) of board.pieceList" :style="{
+                                    top : piece[0] * 50 - piece[0] * 2 - 11 + 'px',
+                                    left : index < 10 ? piece[1] * 50 - piece[1] * 2 - 4 + 'px' : piece[1] * 50 - piece[1] * 2 - 8 + 'px',
+                                    color : board.board[piece[0]][piece[1]] === 1 ? 'white' : 'black'
+                                }">{{ index + 1 }}
+                </div>
+            </div>
+            <div class="active"
+                 v-if="activePoint.length && board.board[activePoint[0]] && !board.board[activePoint[0]][activePoint[1]]"
+                 :style="activePointPos">
+            </div>
+            <div class="coordinate coordinate--x">
+                <span v-for="key in 15">{{key}}</span>
+            </div>
+            <div class="coordinate coordinate--y">
+                <span v-for="key in 15">{{String.fromCharCode( key + 64 )}}</span>
+            </div>
+        </div>
+
+        <div class="messages">
+            <div class="messages__content" id="message_list">
+                <ul>
+                    <li v-for="msg of messageList">
+                        {{ msg.nickname }}: <span v-html="msg.msg"></span>
+                    </li>
+                </ul>
+            </div>
+            <div class="input-area">
+                <input type="text" placeholder="请输入您要说的话" v-model="message">
+                <button @click="saySomething">发送</button>
+            </div>
+        </div>
+        <h1>{{ title }}</h1>
+
+        <div class="btns">
+            <button @click="undo" v-if="board && !board.end">悔棋({{ undoNumber }})</button>
+            <button @click="admitDefeat" v-if="board && !board.end">认输</button>
+            <button @click="draw" v-if="board && !board.end">和棋({{ canDraw }})</button>
+            <button @click="start" v-if="canStart">开始游戏</button>
+        </div>
+    </div>
+
+    <div class="login" v-if="userInfo.show">
+        <h1>GOMOKU</h1>
+        <input type="text" v-model="userInfo.nickname" placeholder="请输入您的名称">
+        <input type="number" v-model="userInfo.roomID" placeholder="请输入房间ID">
+        <button type="button" @click="enterRoom">进入房间</button>
+    </div>
+
+</main>
+
+<script>
+    const MY_IP = "192.168.7.116"
+
+    document.addEventListener( 'drag', e => {
+        e.preventDefault()
+        return false
+    } )
+    document.addEventListener( 'dragstart', e => {
+        e.preventDefault()
+        return false
+    } )
+
+
+    const { ref, watch, reactive, computed } = Vue
+    const Counter = {
+        setup () {
+            let socket = null
+            const position = "ABCDEFGHIJKLMNO"
+            const size = 50
+            const message = ref( "" )
+            const title = ref( '等待玩家中' )
+            const activePoint = ref( [] )
+            const activePointPos = ref( {} )
+            const messageList = ref( [] )
+            const isMyTurn = ref( false )
+            const canStart = ref( false )
+            const undoNumber = ref( 0 )
+            const canDraw = ref( 0 )
+            const userInfo = reactive( {
+                nickname: '',
+                roomID: '',
+                show: true
+            } )
+            const points = [ "3 3", "3 11", "11 3", "11 11", "7 7" ]
+            const board = ref( null )
+            const display = new Array( 15 ).fill( null ).map( item => new Array( 15 ).fill( 0 ) )
+
+
+            function saySomething () {
+                if ( message.value ) {
+                    sendMsg( 'message', { ...userInfo, message: message.value } )
+                    message.value = ''
+                }
+            }
+
+            function inArea ( i, j ) {
+                return i >= 0 && j >= 0 && i < 15 && j < 15
+            }
+
+            function mouseEvent ( i, j ) {
+                if ( !board.value || !isMyTurn.value || board.value.end ) return
+                ({
+                    mousemove () {
+                        let newI = event.layerY > size / 2 ? i + 1 : i
+                        let newJ = event.layerX > size / 2 ? j + 1 : j
+                        if ( inArea( newI, newJ ) && !board.value.board[newI][newJ] ) {
+                            if ( activePoint.value[0] !== newI || activePoint.value[1] !== newJ ) {
+                                activePoint.value = [ newI, newJ ]
+                            }
+                        } else {
+                            activePoint.value = []
+                        }
+                    },
+                    mouseup () {
+                        if ( activePoint.value.length ) {
+                            sendMsg( 'fall', { point: activePoint.value } )
+                            activePoint.value = []
+                        }
+                    },
+                    mouseleave () {
+                        console.log( 'leave' )
+                        activePoint.value = []
+                    }
+                })[event.type]?.()
+
+            }
+
+            function enterRoom () {
+                if ( userInfo.nickname ) {
+                    createWS()
+                    sendMsg( 'login', userInfo )
+                }
+            }
+
+
+            // ws
+            const socketAPI = {
+                failed ( data ) {
+                    alert( data.msg )
+                },
+                login ( data ) {
+                    userInfo.show = false
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `${ data.nickname }${ data.nickname === userInfo.nickname ? '(您)' : '' }进入房间(${ data.roomID })`
+                    } )
+
+                    if ( data.playersNumber >= 2 ) {
+                        canStart.value = true
+                        title.value = '请准备'
+                    }
+                },
+                message ( data ) {
+                    messageList.value.push( {
+                        nickname: data.nickname + (data.nickname === userInfo.nickname ? '(您)' : ''),
+                        msg: data.message
+                    } )
+                },
+                exit ( data ) {
+                    board.value = null
+                    canStart.value = false
+                    title.value = '等待玩家中'
+
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: data.nickname + '退出房间，棋局解散'
+                    } )
+                },
+                start ( data ) {
+                    undoNumber.value = 3
+                    canDraw.value = 1
+                    canStart.value = false
+                    board.value = data.board
+                    isMyTurn.value = board.value.players[board.value.whoTurn] === userInfo.nickname
+                    title.value = `黑棋${ isMyTurn.value ? '(您)' : '' }回合`
+
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `棋局开始，${ board.value.players[1] }${ isMyTurn.value ? '(您)' : '' }执黑先行`
+                    } )
+                },
+                fall ( data ) {
+                    board.value = data.board
+                    isMyTurn.value = board.value.players[board.value.whoTurn] === userInfo.nickname
+                    title.value = `${ [ '', '黑棋', '白棋' ][board.value.whoTurn] }${ isMyTurn.value ? '(您)' : '' }回合`
+
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `${ position[data.point[0]] }${ data.point[1] + 1 } ${ [ '', '白棋', '黑棋' ][board.value.whoTurn] }${ isMyTurn.value ? '' : '(您)' }落子`
+                    } )
+                },
+                end ( data ) {
+                    board.value = data.board
+                    canStart.value = true;
+
+                    ({
+                        win () {
+                            const isMe = board.value.players[board.value.whoTurn] !== userInfo.nickname;
+                            title.value = `${ [ '', '白棋', '黑棋' ][board.value.whoTurn] }${ isMe ? '(您)' : '' }获胜`
+
+                            messageList.value.push( {
+                                nickname: "系统",
+                                msg: `${ [ '', '白棋', '黑棋' ][board.value.whoTurn] }${ isMe ? '(您)' : '' }获胜`
+                            } )
+                        },
+                        admitDefeat () {
+                            const isWin = data.loser !== userInfo.nickname;
+                            title.value = `${ [ '白棋', '黑棋' ][(board.value.players[1] !== data.loser) + 0] }${ isWin ? '(您)' : '' }获胜`
+
+                            messageList.value.push( {
+                                nickname: "系统",
+                                msg: `${ [ '黑棋', '白棋' ][(board.value.players[1] !== data.loser) + 0] }${ !isWin ? '(您)' : '' }投降`
+                            } )
+                        },
+                        draw () {
+                            draw( data )
+                        }
+                    })[data.type]?.()
+                },
+                waiting ( data ) {
+                    canStart.value = data.nickname !== userInfo.nickname
+                    title.value = data.nickname === userInfo.nickname ? `已准备，等待对手准备` : '请准备，对手已准备'
+
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `${ data.nickname }${ data.nickname === userInfo.nickname ? '(您)' : '' }已准备`
+                    } )
+                },
+                askUndo ( data ) {
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `${ [ '', '白棋', '黑棋' ][board.value.whoTurn] }${ data.ask === userInfo.nickname ? '(您)' : '' }请求悔棋`
+                    } )
+
+                    if ( data.ask !== userInfo.nickname ) {
+                        const agree = confirm( "对手请求悔棋，是否同意" )
+                        sendMsg( 'undo', { agree, ask: data.ask, rival: data.rival } )
+                    }
+                },
+                undo ( data ) {
+                    board.value = data.board
+                    isMyTurn.value = board.value.players[board.value.whoTurn] === userInfo.nickname
+                    title.value = `${ [ '', '黑棋', '白棋' ][board.value.whoTurn] }${ isMyTurn.value ? '(您)' : '' }回合`
+                    if ( data.ask === userInfo.nickname ) undoNumber.value = data.undoNumber
+
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: data.agree ?
+                            `${ [ '', '白棋', '黑棋' ][board.value.whoTurn] }${ data.ask !== userInfo.nickname ? '(您)' : '' }同意悔棋` :
+                            `${ [ '', '黑棋', '白棋' ][board.value.whoTurn] }${ data.ask !== userInfo.nickname ? '(您)' : '' }拒绝悔棋`
+                    } )
+
+                    if ( data.agree ) {
+                        const [ i, j ] = data.board.last
+                        messageList.value.push( {
+                            nickname: "系统",
+                            msg: `${ position[i] }${ j + 1 } ${ [ '', '黑棋', '白棋' ][board.value.whoTurn] }${ data.ask === userInfo.nickname ? '(您)' : '' }悔棋`
+                        } )
+                    }
+                },
+                askDraw ( data ) {
+
+                    console.log( board.value.players[0] === data.ask )
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `${ [ '黑棋', '白棋' ][(board.value.players[1] !== data.ask) + 0] }${ data.ask === userInfo.nickname ? '(您)' : '' }请求和棋`
+                    } )
+                    // board.value.players[1] 黑棋
+
+                    if ( data.ask !== userInfo.nickname ) {
+                        const agree = confirm( "对手请求和棋，是否同意" )
+                        sendMsg( 'draw', { agree, ask: data.ask, rival: data.rival } )
+                    } else {
+                        canDraw.value = 0
+                    }
+
+                },
+                draw ( data ) {
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `${ [ '黑棋', '白棋' ][(board.value.players[1] === data.ask) + 0] }${ data.ask !== userInfo.nickname ? '(您)' : '' }${ data.agree ? '同意' : '拒绝' }和棋`
+                    } )
+
+                    if ( data.agree ) {
+                        draw( data )
+                    }
+                }
+            }
+
+            function draw ( data ) {
+                board.value = data.board
+                canStart.value = true;
+
+                title.value = `和局`
+                messageList.value.push( {
+                    nickname: "系统",
+                    msg: `和局`
+                } )
+
+            }
+
+            function createWS () {
+                socket = io( `ws://${ MY_IP }:3000` );
+
+                for ( let event in socketAPI ) {
+                    socket.on( event, socketAPI[event] )
+                }
+            }
+
+            function sendMsg ( event, data ) {
+                socket.emit( event, data )
+            }
+
+
+            watch( messageList, function () {
+                window.setTimeout( () => message_list.scrollTo( 0, message_list.scrollHeight ) )
+            }, { deep: true } )
+
+            watch( activePoint, function ( newV ) {
+                if ( newV.length ) {
+                    activePointPos.value = {
+                        top: newV[0] * 50 - newV[0] * 2 - 25 + 'px',
+                        left: newV[1] * 50 - newV[1] * 2 - 25 + 'px'
+                    }
+                } else {
+                    activePointPos.value = {};
+                }
+            }, { deep: true } )
+
+            return {
+                board,
+                title,
+                points,
+                message,
+                display,
+                canDraw,
+                userInfo,
+                canStart,
+                undoNumber,
+                messageList,
+                activePoint,
+                activePointPos,
+
+                undo: () => sendMsg( 'askUndo', userInfo ),
+                draw: () => sendMsg( 'askDraw', userInfo ),
+                admitDefeat: () => sendMsg( 'admitDefeat', userInfo ),
+                start: () => sendMsg( 'start', userInfo ),
+                saySomething,
+                mouseEvent,
+                enterRoom
+            }
+        }
+    }
+
+    Vue.createApp( Counter ).mount( '#app' )
+
+    /*
+    *
+    *         setup () {
+            let winner = false
+            let socket = null
+            const position = "ABCDEFGHIJKLMNO"
+            const size = 50
+            const isEnd = ref( false )
+            const title = ref( "黑棋回合" )
+            const message = ref( "" )
+            const activePoint = ref( [] )
+            const activePointPos = ref( {} )
+            const pieceList = ref( [] )
+            const messageList = ref( [] )
+            const userInfo = reactive( {
+                nickname: '',
+                roomID: '',
+                show: true
+            } )
+            const points = [ "3 3", "3 11", "11 3", "11 11", "7 7" ]
+            const board = ref( new Array( 15 ).fill( null ).map( item => new Array( 15 ).fill( 0 ) ) )
+
+
+            function saySomething () {
+                if ( message.value ) {
+                    messageList.value.push( {
+                        nickname: "我",
+                        msg: message.value
+                    } )
+                    message.value = ''
+                }
+            }
+
+            function undo () {
+                if ( pieceList.value.length ) {
+                    const [ targetI, targetJ ] = pieceList.value.pop()
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `${ position[targetI] }${ targetJ + 1 } ${ board.value[targetI][targetJ] === 1 ? "黑棋" : "白棋" }悔棋`
+                    } )
+                    board.value[targetI][targetJ] = 0
+                    title.value = `${ pieceList.value.length % 2 === 0 ? "黑棋" : "白棋" }回合`
+                }
+            }
+
+            function end ( type = 0 ) {
+                const piece = type ? pieceList.value.length % 2 === 0 ? "黑棋" : "白棋" : pieceList.value.length % 2 === 1 ? "黑棋" : "白棋"
+                const otherPiece = type ? pieceList.value.length % 2 === 0 ? "白棋" : "黑棋" : pieceList.value.length % 2 === 1 ? "白棋" : "黑棋"
+                if ( !isEnd.value ) {
+                    title.value = [
+                        piece + "获胜",
+                        piece + "认输，" + otherPiece + "获胜",
+                        piece + "求和，和局",
+                    ][type]
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `${ piece }${ [ "获胜", "认输", "求和" ][type] }`
+                    } )
+                }
+                activePoint.value = []
+                isEnd.value = true;
+            }
+
+            function isWin ( board ) {
+                for ( let k = 0; k < pieceList.value.length; k++ ) {
+                    const [ i, j ] = pieceList.value[k]
+                    if ( i <= 15 - 2 || j <= 15 - 2 ) {
+                        let str = ""
+
+                        for ( let dirI = -2; dirI < 3; dirI++ ) {
+                            for ( let dirJ = -2; dirJ < 3; dirJ++ ) {
+                                const newI = i + dirI
+                                const newJ = j + dirJ
+
+                                if ( newI >= 15 || newJ >= 15 ) {
+                                    str += '0'
+                                } else {
+                                    str += board[newI][newJ]
+                                }
+                            }
+                        }
+
+                        if ( /11111|1....1....1....1....1|1.....1.....1.....1.....1|1...1...1...1...1/.test( str ) ) return 1
+                        if ( /22222|2....2....2....2....2|2.....2.....2.....2.....2|2...2...2...2...2/.test( str ) ) return 2
+                    }
+                }
+
+                return false
+            }
+
+            function mouseEvent ( i, j ) {
+                if ( isEnd.value ) return
+
+                ({
+                    mousemove () {
+                        let newI = event.layerY > size / 2 ? i + 1 : i
+                        let newJ = event.layerX > size / 2 ? j + 1 : j
+                        if ( activePoint[0] !== newI || activePoint[1] !== newJ ) {
+                            activePoint.value = [ newI, newJ ]
+                        }
+                    },
+                    mouseup () {
+                        if ( activePoint.value.length ) {
+                            const [ targetI, targetJ ] = activePoint.value
+                            if ( board.value[targetI][targetJ] === 0 ) {
+                                board.value[targetI][targetJ] = pieceList.value.length % 2 === 0 ? 1 : 2
+                                pieceList.value.push( activePoint.value )
+                                activePoint.value = []
+                                messageList.value.push( {
+                                    nickname: "系统",
+                                    msg: `${ position[i] }${ j + 1 } ${ board.value[targetI][targetJ] === 1 ? "黑棋" : "白棋" }落子`
+                                } )
+                                title.value = `${ pieceList.value.length % 2 === 0 ? "黑棋" : "白棋" }回合`
+                                if ( pieceList.value.length >= 9 ) {
+                                    winner = isWin( board.value )
+                                    if ( winner ) end()
+                                }
+                            }
+                        }
+                    },
+                    mouseleave () {
+                        console.log( 'leave' )
+                        activePoint.value = []
+                    }
+                })[event.type]?.()
+
+            }
+
+            function enterRoom () {
+                if ( userInfo.nickname ) {
+                    createWS()
+                    sendMsg( 'login', userInfo )
+                }
+            }
+
+
+            // ws
+            const socketAPI = {
+                failed ( data ) {
+                    alert( data.msg )
+                },
+                login ( data ) {
+                    userInfo.show = false
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: `${ data.nickname }进入房间(${ data.roomID })`
+                    } )
+                },
+                exit ( data ) {
+                    messageList.value.push( {
+                        nickname: "系统",
+                        msg: data.nickname + '退出房间'
+                    } )
+                }
+            }
+
+            function createWS () {
+                socket = io( "ws://127.0.0.1:3000" );
+
+                for ( let event in socketAPI ) {
+                    socket.on( event, socketAPI[event] )
+                }
+            }
+
+            function sendMsg ( event, data ) {
+                socket.emit( event, data )
+            }
+
+
+            watch( messageList, function () {
+                window.setTimeout( () => message_list.scrollTo( 0, message_list.scrollHeight ) )
+            }, { deep: true } )
+
+            watch( activePoint, function ( newV ) {
+                if ( newV.length ) {
+                    activePointPos.value = {
+                        top: newV[0] * 50 - newV[0] * 2 - 25 + 'px',
+                        left: newV[1] * 50 - newV[1] * 2 - 25 + 'px'
+                    }
+                } else {
+                    activePointPos.value = {};
+                }
+            }, { deep: true } )
+
+            return {
+                isEnd,
+                board,
+                title,
+                points,
+                message,
+                userInfo,
+                pieceList,
+                messageList,
+                activePoint,
+                activePointPos,
+
+                undo,
+                restart: () => location.href = window.location.href,
+                draw: () => end( 2 ),
+                admitDefeat: () => end( 1 ),
+                saySomething,
+                mouseEvent,
+                enterRoom
+            }
+        }
+
+    * */
+</script>
+</body>
+</html>
